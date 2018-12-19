@@ -6,14 +6,14 @@
 -define(TEST, true).
 
 -compile(tuple_calls).
--include_lib("kernel/include/logger.hrl").
+% -include_lib("kernel/include/logger.hrl").
 
 -export([start/1, stop/0, loop/2]).
 
 %% External API
 
 
--record(accountDetails, {name, balance, pin}).
+-record(accountDetails, {name, balance, pin, islogin}).
 -record(account, {id, details=accountDetails#{}}).
 
 start(Options) ->
@@ -40,7 +40,7 @@ handle_get("getBalance", Req, _) ->
          rec2json:msg2json(error, "List of accounts is empty!");
       _ ->
          ListofAccountsrecord = convert_tuples_to_records(Accounts),
-         SearchAccountforBalance = get_balance(Name, Pin, ListofAccountsrecord),
+         SearchAccountforBalance = search_account_byNameAndPin(Name, Pin, ListofAccountsrecord),
          generate_body(SearchAccountforBalance)
       end,
    Req:respond({200, [{"Content-Type", "text/plain"}], Body});
@@ -54,7 +54,7 @@ handle_get("check", Req, _) ->
          rec2json:msg2json(error, "User not found!");
       _ ->
          ListofAccountsrecord = convert_tuples_to_records(Accounts),
-         IsAccount = lists:map(fun(X) ->  io:format("Account record format: ~p\n", [X#account.details#accountDetails.name])end, ListofAccountsrecord),
+         % IsAccount = lists:map(fun(X) ->  io:format("Account record format: ~p\n", [X#account.details#accountDetails.name])end, ListofAccountsrecord),
          Account = search_account_byId(hd(Id), ListofAccountsrecord),
          generate_body(Account)
    end,
@@ -67,10 +67,18 @@ handle_get(Path, Req, DocRoot) ->
 handle_post("create", Req, _) ->
    error_logger:info_msg("[POST]: Create"),
    [Balance, Id, Name, Pin] = get_params(Req),
-   Account = #account{id=Id, details=#accountDetails{name=Name, balance=Balance, pin=Pin}},
+   Account = #account{id=Id, details=#accountDetails{name=Name, balance=Balance, pin=Pin, islogin = false}},
    Accounts = mochiglobal:get(accounts),
    Body = create_account(Accounts, Account),
    Req:respond({200, [{"Content-Type", "text/plain"}], Body});
+
+handle_post("login", Req, _) ->
+   error_logger:info_msg("[POST]: Login"),
+   loginout_account("login", Req);
+
+handle_post("logout", Req, _) ->
+   error_logger:info_msg("[POST]: Logout"),
+   loginout_account("logout", Req);
 
 handle_post(_Path, Req, _DocRoot) ->
    error_logger:info_msg("[POST]: Other"),
@@ -125,6 +133,47 @@ create_account(Accounts, Account=#account{id=Id, details=_Details}) ->
       rec2json:msg2json(error, "An account with this id already exists!")
    end.
 
+update_account(Accounts, Account=#account{id=Id, details=Details}, Loggedin) ->
+   LoginAccount = #account{id=Id, details=#accountDetails{name = Details#accountDetails.name, balance = Details#accountDetails.balance, pin = Details#accountDetails.pin,
+                                       islogin = Loggedin}},
+   ListForDelete = lists:delete(Account, Accounts),
+   NewAccounts = [LoginAccount|ListForDelete],
+   mochiglobal:put(accounts, NewAccounts),
+   case Loggedin of
+      true ->
+         rec2json:msg2json(msg, "Login");
+      false ->
+         rec2json:msg2json(msg, "Logout")
+   end.
+
+loginout_account(Path, Req) ->
+   [Name, Pin] = get_params(Req),
+   Accounts = mochiglobal:get(accounts),
+   Account = search_account_byNameAndPin(Name, Pin, Accounts),
+   Body = case length(Account) of
+      0 ->
+         rec2json:msg2json(error, "Account name or pin is invalid!");
+      _ ->
+       call_function(Path, hd(Account), Accounts, is_login(hd(Account)))
+   end,
+   Req:respond({200, [{"Content-Type", "text/plain"}], Body}).
+
+call_function("login", Account, Accounts, true) -> rec2json:msg2json(error, "Already login!");
+
+call_function("login", Account, Accounts, false) -> update_account(Accounts, Account, true);
+
+call_function("logout", Account, Accounts, false) -> rec2json:msg2json(error, "Already logout!");
+
+call_function("logout", Account, Accounts, true) -> update_account(Accounts, Account, false).
+
+is_login(Account) ->
+   case Account#account.details#accountDetails.islogin of
+      true ->
+         true;
+      _ ->
+         false
+   end.
+
 %% -----------------------------------------------------------------------------------------------------------------
 generate_body(undefined) ->
    ok;
@@ -142,9 +191,9 @@ search_account_byId(Id, Accounts) ->
 
 convert_tuples_to_records(Accounts) ->
    lists:map(fun(X) -> #account{id = element(2,X), details =
-      #accountDetails{name=element(2,element(3,X)), balance =element(3,element(3,X)), pin = element(4,element(3,X))}} end, Accounts).
+      #accountDetails{name=element(2,element(3,X)), balance =element(3,element(3,X)), pin = element(4,element(3,X)), islogin = element(5,element(3,X)) }} end, Accounts).
 
-get_balance(Name, Pin, Accounts) ->
+search_account_byNameAndPin(Name, Pin, Accounts) ->
    lists:filter(fun(X) -> X#account.details#accountDetails.name =:= Name andalso X#account.details#accountDetails.pin =:= Pin end, Accounts).
 
 
@@ -181,12 +230,12 @@ Accounttuple2 = {"account", 2, {"accountDetails", "account2", "200", 12}},
 Accountstuples = [Accounttuple1, Accounttuple2],
 ?_assertEqual(Accounts, convert_tuples_to_records(Accountstuples)).
 
-get_balance_test_() ->
+search_account_byNameAndPin_test_() ->
 Account1 = #account{id = 1, details=#accountDetails{name="account1", balance="1000", pin=12345}},
 Account2 = #account{id = 2, details=#accountDetails{name="account2", balance="200", pin=12}},
 Accounts = [Account1, Account2],
 Name = "account1",
 Pin = 12345,
-?_assertEqual([Account1], get_balance(Name, Pin, Accounts)).
+?_assertEqual([Account1], search_account_byNameAndPin(Name, Pin, Accounts)).
 
 -endif.
